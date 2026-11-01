@@ -1,7 +1,7 @@
 import { DEFAULT_SERVER_URL } from './constants.js'
 import { getConfig } from './config.js'
 import { toText } from './utils.js'
-import { connect, disconnect } from './websocket.js'
+import { connect, disconnect, isWsOpen, sendPluginCommand } from './websocket.js'
 
 export function defineSettings(ctx, state) {
   const SettingsPanel = {
@@ -40,6 +40,18 @@ export function defineSettings(ctx, state) {
         }
       }
 
+      const openIslandSettings = () => {
+        if (!isWsOpen(state)) {
+          ctx.toast.warning('未连接灵动岛，无法打开设置')
+          return
+        }
+        if (sendPluginCommand(state, 'open_settings')) {
+          ctx.toast.success('已打开灵动岛设置')
+        } else {
+          ctx.toast.warning('未连接灵动岛，无法打开设置')
+        }
+      }
+
       onMounted(() => {
         reload()
       })
@@ -72,6 +84,17 @@ export function defineSettings(ctx, state) {
         background: 'var(--control-muted-bg, rgba(128, 128, 128, 0.12))',
         color: 'var(--color-text-main, inherit)',
         outline: 'none',
+      }
+
+      const secondaryButtonStyle = {
+        height: '36px',
+        padding: '0 16px',
+        borderRadius: '10px',
+        fontWeight: '700',
+        border: '1px solid var(--control-border, rgba(128, 128, 128, 0.28))',
+        background: 'var(--control-muted-bg, rgba(128, 128, 128, 0.12))',
+        color: 'var(--color-text-main, inherit)',
+        cursor: 'pointer',
       }
 
       return () => h('div', { style: { display: 'grid', gap: '4px' } }, [
@@ -123,7 +146,12 @@ export function defineSettings(ctx, state) {
             },
           }),
         ]),
-        h('div', { style: { display: 'flex', justifyContent: 'flex-end', paddingTop: '14px' } }, [
+        h('div', { style: { display: 'flex', justifyContent: 'flex-end', gap: '12px', paddingTop: '14px' } }, [
+          h('button', {
+            type: 'button',
+            style: secondaryButtonStyle,
+            onClick: openIslandSettings,
+          }, '打开设置'),
           h('button', {
             type: 'button',
             disabled: saving.value,
