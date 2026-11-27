@@ -241,7 +241,7 @@ export async function handleShowMainWindow(state, ctx) {
   }
 
   // 拉起主窗口失败时，发送插件命令拉起主窗口
-  sendPluginCommand(state, 'show_main_window', {})
+  sendPluginCommand(state, 'show_main_window', { process_name: 'EchoMusic.exe' })
 }
 
 export async function handleUploadMusicFile(ctx, data) {
