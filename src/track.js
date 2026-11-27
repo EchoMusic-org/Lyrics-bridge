@@ -52,6 +52,9 @@ export function isFavoriteTrack(ctx, track) {
 }
 
 export function getFavoriteStateForSnapshot(ctx, snapshot) {
+  const playback = snapshot?.playback
+  // 宿主在快照构建时已对收藏状态做过缓存与收藏队列兜底，优先采用
+  if (playback && typeof playback.isFavorite === 'boolean') return playback.isFavorite
   return isFavoriteTrack(ctx, getCurrentTrackForSnapshot(ctx, snapshot))
 }
 
@@ -61,7 +64,10 @@ export function getCurrentFavoriteWatchKey(state, ctx) {
   const playback = snapshot?.playback || {}
   const id = getTrackProtocolId(track, playback)
   if (!id) return ''
-  return `${id}:${isFavoriteTrack(ctx, track) ? '1' : '0'}`
+  const isFavorite = snapshot?.playback
+    ? playback.isFavorite === true
+    : isFavoriteTrack(ctx, track)
+  return `${id}:${isFavorite ? '1' : '0'}`
 }
 
 export function parseFavoriteWatchKey(key) {
@@ -91,9 +97,13 @@ export function detectTrackDirection(state, ctx, newTrackId) {
     const queue = ctx.playlist?.getActiveQueue?.() || []
     if (!queue.length || !state.lastTrackKey) return 'next'
 
+    // trackKey 来自 playback.lyricHash（酷狗曲目即 hash）， Song.id 是 mixsongid，
+    // 二者通常不相等；必须对每项的全部身份字段取候选再比较，否则方向恒判为 next
     const matchesId = (item, id) => {
-      const itemId = toText(item?.id || item?.songId || item?.hash)
-      return itemId === id
+      const candidates = [item?.id, item?.songId, item?.hash, item?.mixSongId]
+        .map(toText)
+        .filter(Boolean)
+      return candidates.includes(id)
     }
 
     const oldIndex = queue.findIndex(item => matchesId(item, state.lastTrackKey))
@@ -112,10 +122,37 @@ export function getCurrentPositionMs(state) {
   return toMilliseconds(playback.currentTime || playback.position || 0)
 }
 
+// 宿主时钟的 seek 代次（seekTimestamp，每次 seek 严格递增）；无 clock 的旧版宿主返回 null
+export function getSeekGeneration(snapshot) {
+  const clock = snapshot?.playback?.clock
+  if (!clock || typeof clock !== 'object') return null
+  const generation = Number(clock.generation)
+  return Number.isFinite(generation) ? generation : null
+}
+
 export function getInterpolatedPositionMs(state) {
   const playback = state.latestSnapshot?.playback || {}
-  const isPlaying = playback.isPlaying === true
 
+  // 优先使用宿主时钟：positionMs 是采样点真实位置，sampledAt 为采样时刻，
+  // isAdvancing 区分「播放中」与「缓冲/seek 中」，playbackRate 保证倍速不偏差
+  const clock = playback.clock
+  if (clock && typeof clock === 'object' && Number.isFinite(Number(clock.positionMs)) && Number(clock.sampledAt) > 0) {
+    const positionMs = Math.max(0, Number(clock.positionMs))
+    if (clock.isAdvancing === true) {
+      const rate = Number(clock.playbackRate)
+      const safeRate = Number.isFinite(rate) && rate > 0 ? rate : 1
+      const elapsed = Math.max(0, Date.now() - Number(clock.sampledAt))
+      const projected = positionMs + elapsed * safeRate
+      const durationMs = Number(clock.durationMs)
+      return Number.isFinite(durationMs) && durationMs > 0
+        ? Math.min(projected, durationMs)
+        : projected
+    }
+    return positionMs
+  }
+
+  // 旧版宿主兜底：按 1 倍速线性插值
+  const isPlaying = playback.isPlaying === true
   if (isPlaying && state.lastPositionTimestamp > 0) {
     const elapsed = Date.now() - state.lastPositionTimestamp
     return state.lastPositionMs + elapsed

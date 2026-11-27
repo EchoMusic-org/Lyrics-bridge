@@ -23,11 +23,13 @@ export function createState() {
     lastIsPlaying: false,
     lastPositionMs: 0,
     lastPositionTimestamp: 0,
+    lastSeekGeneration: null,
     lastServerSeekTriggered: false,
     serverSeekClearTimer: null,
     helperPids: [],
     disposed: false,
     coverBase64Cache: new Map(),
+    coverInflight: new Map(),
   }
 }
 

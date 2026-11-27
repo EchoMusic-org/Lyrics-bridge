@@ -1,10 +1,13 @@
 import {
+  AUDIO_DOWNLOAD_TIMEOUT_MS,
   MAX_SEEK_SYNC_INTERVAL_MS,
+  MAX_UPLOAD_BYTES,
   MIN_SEEK_SYNC_INTERVAL_MS,
   PING_INTERVAL_MS,
   RECONNECT_DELAY_MS,
   SEEK_MARK_CLEAR_DELAY_MS,
   TOAST_DURATION_MS,
+  UPLOAD_TIMEOUT_MS,
 } from './constants.js'
 import { getConfig } from './config.js'
 import { handleSetFavorite } from './favorite.js'
@@ -12,8 +15,8 @@ import { sendMusicData } from './musicdata.js'
 import { handleSetPlayMode, sendPlayModeState } from './playmode.js'
 import { refreshLatestSnapshot } from './snapshot.js'
 import { nextSeq } from './state.js'
-import { getCurrentAudioUrl, getCurrentPositionMs, getCurrentTrack, getInterpolatedPositionMs } from './track.js'
-import { toMilliseconds, toSeekSeconds, toText } from './utils.js'
+import { getCurrentAudioUrl, getCurrentTrack, getInterpolatedPositionMs, getTrackKey } from './track.js'
+import { logDebug, toMilliseconds, toSeekSeconds, toText } from './utils.js'
 import { handleSetVolume, sendVolumeState } from './volume.js'
 
 
@@ -233,15 +236,41 @@ export async function handleShowMainWindow(state, ctx) {
     }
   }
 
-  // 最小化时，拉起主窗口
+  // 已在前台则无需处理
+  if (isMainWindowForeground()) return
+
   const showMainWindow = ctx.electron?.miniPlayer?.command
   if (typeof showMainWindow === 'function') {
+    // 宿主命令是 fire-and-forget 的 IPC，调用后立刻检查可见性读到的必然是旧状态；
+    // 就此收口不再回发服务端命令，避免宿主已拉起成功后服务端二次激活
     showMainWindow('showMainWindow')
-    if (isMainWindowForeground()) return
+    return
   }
 
-  // 拉起主窗口失败时，发送插件命令拉起主窗口
+  // 宿主无窗口唤起接口时，发送插件命令让服务端激活主窗口
   sendPluginCommand(state, 'show_main_window', { process_name: 'EchoMusic.exe' })
+}
+
+// 读取宿主应用版本（优先取设置 store 已水合的值，兜底走 IPC）
+async function getHostAppVersion(ctx) {
+  const storedVersion = toText(ctx.stores?.settings?.appVersion)
+  if (storedVersion) return storedVersion
+
+  try {
+    const appInfo = await ctx.electron?.appInfo?.get?.()
+    return toText(appInfo?.version)
+  } catch {
+    return ''
+  }
+}
+
+async function sendSoftwareInfo(state, ctx) {
+  const version = await getHostAppVersion(ctx)
+  sendPluginCommand(state, 'software_info', {
+    name: 'EchoMusic',
+    version,
+    author: '',
+  })
 }
 
 export async function handleUploadMusicFile(ctx, data) {
@@ -251,20 +280,45 @@ export async function handleUploadMusicFile(ctx, data) {
   const audioUrl = getCurrentAudioUrl(ctx)
   if (!audioUrl) return
 
-  const track = getCurrentTrack(ctx)
   const normalizedUploadUrl = uploadUrl.replace(/\/+$/, '') + '/Music-file-upload'
+  const fetcher = ctx.net?.fetch || fetch
 
   try {
-    const fetcher = ctx.net?.fetch || fetch
-    const audioResponse = await fetcher(audioUrl)
-    if (!audioResponse?.ok) return
+    // 下载当前音频：限时 + 大小上限，避免大文件或慢链路长期占用内存与带宽
+    const downloadController = typeof AbortController !== 'undefined' ? new AbortController() : null
+    const downloadTimeout = downloadController
+      ? setTimeout(() => downloadController.abort(), AUDIO_DOWNLOAD_TIMEOUT_MS)
+      : null
+
+    let audioResponse
+    try {
+      audioResponse = await fetcher(audioUrl, downloadController ? { signal: downloadController.signal } : undefined)
+    } finally {
+      if (downloadTimeout) clearTimeout(downloadTimeout)
+    }
+
+    if (!audioResponse?.ok) {
+      logDebug('音频下载失败，跳过上传')
+      return
+    }
+
+    const contentLength = Number(audioResponse.headers?.get?.('content-length'))
+    if (Number.isFinite(contentLength) && contentLength > MAX_UPLOAD_BYTES) {
+      logDebug('音频超过大小上限，跳过上传', contentLength)
+      return
+    }
 
     const blob = await audioResponse.blob()
+    if (blob.size > MAX_UPLOAD_BYTES) {
+      logDebug('音频超过大小上限，跳过上传', blob.size)
+      return
+    }
 
     const headers = {
       'Content-Type': blob.type || 'audio/mpeg',
     }
 
+    const track = getCurrentTrack(ctx)
     if (track) {
       const trackId = toText(track?.id || track?.songId || track?.hash)
       if (trackId) headers['X-Music-Id'] = trackId
@@ -274,17 +328,24 @@ export async function handleUploadMusicFile(ctx, data) {
       if (artist) headers['X-Music-Artist'] = encodeURIComponent(artist)
     }
 
-    const uploadResponse = await fetcher(normalizedUploadUrl, {
-      method: 'POST',
-      headers,
-      body: blob,
-    })
+    const uploadController = typeof AbortController !== 'undefined' ? new AbortController() : null
+    const uploadTimeout = uploadController
+      ? setTimeout(() => uploadController.abort(), UPLOAD_TIMEOUT_MS)
+      : null
 
-    if (uploadResponse.status !== 200) {
-      // 静默忽略非 200 响应
+    try {
+      const uploadResponse = await fetcher(normalizedUploadUrl, {
+        method: 'POST',
+        headers,
+        body: blob,
+        ...(uploadController ? { signal: uploadController.signal } : {}),
+      })
+      if (!uploadResponse?.ok) logDebug('音频上传失败，HTTP', uploadResponse?.status)
+    } finally {
+      if (uploadTimeout) clearTimeout(uploadTimeout)
     }
-  } catch {
-    // 静默忽略上传失败
+  } catch (error) {
+    logDebug('音频上传失败', error)
   }
 }
 
@@ -322,14 +383,9 @@ export function handleMessage(state, ctx, data) {
             })
             break
           }
-          case 'get_software_info': {
-            sendPluginCommand(state, 'software_info', {
-              name: ctx.manifest?.name || 'EchoMusic',
-              version: ctx.manifest?.version || '',
-              author: ctx.manifest?.author || '',
-            })
+          case 'get_software_info':
+            void sendSoftwareInfo(state, ctx)
             break
-          }
           case 'upload_music_file':
             void handleUploadMusicFile(ctx, actionData)
             break
@@ -391,7 +447,13 @@ export function handleMessage(state, ctx, data) {
 export async function scheduleReconnect(state, ctx) {
   if (state.disposed) return
 
-  const { autoReconnect } = await getConfig(ctx)
+  // 配置读取失败时按默认开启重试，等待下次连接成功后再确认用户设置
+  let autoReconnect = true
+  try {
+    ;({ autoReconnect } = await getConfig(ctx))
+  } catch (error) {
+    logDebug('读取重连配置失败，按默认策略重试', error)
+  }
   if (state.disposed || !autoReconnect) return
   if (state.reconnectTimer) clearTimeout(state.reconnectTimer)
 
@@ -407,7 +469,17 @@ export async function connect(state, ctx) {
 
   state.connecting = true
 
-  const { serverUrl } = await getConfig(ctx)
+  let serverUrl = ''
+  try {
+    ;({ serverUrl } = await getConfig(ctx))
+  } catch (error) {
+    // 配置读取失败必须复位 connecting，否则后续所有连接都会被 early-return 挡死
+    state.connecting = false
+    logDebug('读取连接配置失败', error)
+    void scheduleReconnect(state, ctx)
+    return
+  }
+
   if (state.disposed) {
     state.connecting = false
     return
@@ -428,6 +500,16 @@ export async function connect(state, ctx) {
 
       await refreshLatestSnapshot(state, ctx)
       if (!state.disposed && isWsOpen(state)) {
+        // 连接建立后同步当前播放状态：服务端（如灵动岛）重启后无法得知 EchoMusic 是否在播放，
+        // 需要立刻收到 play/pause 与进度，否则要等到下一次状态变化才能对齐
+        const snapshot = state.latestSnapshot
+        if (snapshot && getTrackKey(snapshot)) {
+          const isPlaying = snapshot.playback?.isPlaying === true
+          sendPluginCommand(state, isPlaying ? 'play' : 'pause', {
+            position_ms: getInterpolatedPositionMs(state),
+          })
+        }
+
         // 连接成功后发送 MusicData（可能有歌词也可能没有）
         await sendMusicData(state, ctx, { force: true, reason: 'connect' })
         subscribe(state)

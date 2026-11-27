@@ -109,6 +109,7 @@ jobs:
         run: |
           set -euo pipefail
           npm ci
+          npm test
           npm run build
 
       - name: Stage plugin files
@@ -116,6 +117,16 @@ jobs:
         run: |
           set -euo pipefail
           cp manifest.json dist/manifest.json
+
+          # tag 打包时校验 tag 与 manifest 版本一致，避免发版后客户端检测不到更新
+          if [[ "${GITHUB_REF_TYPE:-branch}" == "tag" ]]; then
+            manifest_version="$(node -p "require('./manifest.json').version")"
+            tag_version="${GITHUB_REF_NAME#v}"
+            if [[ "${tag_version}" != "${manifest_version}" ]]; then
+              echo "tag ${GITHUB_REF_NAME} 与 manifest.json 版本 ${manifest_version} 不一致" >&2
+              exit 1
+            fi
+          fi
 
           # 验证
           if [[ ! -f dist/index.js || ! -f dist/manifest.json ]]; then

@@ -1,10 +1,31 @@
+import { HELPER_LAUNCH_WAIT_MS } from './src/constants.js'
 import { initFavoriteWatch } from './src/favorite.js'
 import { initPlayModeWatch } from './src/playmode.js'
 import { initNowPlayingSubscription } from './src/snapshot.js'
 import { createState } from './src/state.js'
 import { defineSettings } from './src/settings.js'
 import { initVolumeWatch } from './src/volume.js'
+import { logDebug } from './src/utils.js'
 import { connect, disconnect, isWsOpen, send } from './src/websocket.js'
+
+// 等待首次连接出结果（成功/失败/超时），用于判断服务端是否已在运行
+function waitForConnectionSettled(state, timeoutMs) {
+  return new Promise((resolve) => {
+    const startedAt = Date.now()
+    const poll = () => {
+      if (state.disposed) return resolve(false)
+
+      const ws = state.ws
+      if (ws && ws.readyState === WebSocket.OPEN) return resolve(true)
+      if (!ws || ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
+        return resolve(false)
+      }
+      if (Date.now() - startedAt >= timeoutMs) return resolve(false)
+      setTimeout(poll, 100)
+    }
+    poll()
+  })
+}
 
 async function launchHelper(state, ctx) {
   if (state.disposed) return
@@ -14,6 +35,10 @@ async function launchHelper(state, ctx) {
 
   const isEnabled = await ctx.storage.get('autoLaunch')
   if (isEnabled === false) return
+
+  // 已连上说明服务端已在运行（如用户手动启动了灵动岛），不再拉起重复实例
+  const connected = await waitForConnectionSettled(state, HELPER_LAUNCH_WAIT_MS)
+  if (state.disposed || connected) return
 
   const result = await ctx.process.launch({
     executable: 'bin/EchoMusic-Lyrics-WinIsland.exe',
@@ -84,7 +109,7 @@ export default async function (ctx) {
   initFavoriteWatch(state, ctx)
   initVolumeWatch(state, ctx)
   initPlayModeWatch(state, ctx)
-  await connect(state, ctx)
+  await connect(state, ctx).catch(error => logDebug('初始连接失败', error))
   void launchHelper(state, ctx)
 
   ctx.dispose(() => {

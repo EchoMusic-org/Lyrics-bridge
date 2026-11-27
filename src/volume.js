@@ -1,4 +1,4 @@
-import { unwrapValue } from './utils.js'
+import { logDebug, unwrapValue } from './utils.js'
 import { isWsOpen, sendPluginCommand } from './websocket.js'
 
 export function normalizeVolume(value) {
@@ -54,8 +54,9 @@ export function handleSetVolume(state, ctx, data) {
 
   try {
     ctx.player.setVolume(volume)
-  } catch {
+  } catch (error) {
     // 设置音量失败时保持静默，避免服务端误判协议失败。
+    logDebug('设置音量失败', error)
   }
 }
 

@@ -2,12 +2,13 @@ import { sendMusicData } from './musicdata.js'
 import {
   getCurrentFavoriteWatchKey,
   getCurrentTrack,
+  getFavoriteStateForSnapshot,
   getTrackIdentityCandidates,
   getTrackProtocolId,
   isFavoriteTrack,
   parseFavoriteWatchKey,
 } from './track.js'
-import { toText } from './utils.js'
+import { logDebug, toText } from './utils.js'
 import { isWsOpen, sendPluginCommand } from './websocket.js'
 
 export function sendFavoriteState(state, ctx, track, isFavorite, options = {}) {
@@ -42,7 +43,8 @@ export async function handleSetFavorite(state, ctx, data) {
   const playlistStore = ctx.stores?.playlist
   if (!playlistStore) return
 
-  const currentFavorite = isFavoriteTrack(ctx, track)
+  // 当前态优先取快照（宿主已做收藏缓存兜底，收藏列表未加载时 store 会误报 false）
+  const currentFavorite = getFavoriteStateForSnapshot(ctx, snapshot)
   if (currentFavorite === shouldFavorite) {
     sendFavoriteState(state, ctx, track, shouldFavorite, { force: true })
     void sendMusicData(state, ctx, { force: true, reason: 'favorite-noop' })
@@ -58,11 +60,13 @@ export async function handleSetFavorite(state, ctx, data) {
       await playlistStore.removeFromFavorites?.(getTrackProtocolId(track, playback))
     }
 
+    // 操作后以 store 为准（快照尚未随本次变更刷新）
     const nextFavorite = isFavoriteTrack(ctx, track)
     sendFavoriteState(state, ctx, track, nextFavorite)
     void sendMusicData(state, ctx, { force: true, reason: 'favorite-command' })
-  } catch {
+  } catch (error) {
     // 收藏操作失败时保持静默，避免外部服务端误以为状态已切换
+    logDebug('收藏操作失败', error)
   }
 }
 

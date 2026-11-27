@@ -1,3 +1,4 @@
+import { logDebug } from './utils.js'
 import { isWsOpen, sendPluginCommand } from './websocket.js'
 
 const VALID_PLAY_MODES = ['sequential', 'list', 'random', 'single']
@@ -33,7 +34,8 @@ export function handleSetPlayMode(state, ctx, data) {
 
   try {
     ctx.player.setPlayMode(mode)
-  } catch {
+  } catch (error) {
+    logDebug('设置播放模式失败', error)
   }
 }
 

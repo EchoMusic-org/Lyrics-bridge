@@ -8,7 +8,6 @@ import {
   getTrackArtists,
   getTrackKey,
   getTrackProtocolId,
-  isFavoriteTrack,
 } from './track.js'
 import { getCurrentPlayMode } from './playmode.js'
 import { toText } from './utils.js'
@@ -28,10 +27,11 @@ export async function buildMusicDataPayload(state, ctx, snapshot) {
       artist: artistText,
       artists,
       cover_base64: coverBase64,
-      is_favorite: isFavoriteTrack(ctx, track),
+      // 优先使用快照中的收藏状态（宿主已做缓存与收藏队列兜底），无 playback 时回退 store 查询
+      is_favorite: getFavoriteStateForSnapshot(ctx, snapshot),
       play_mode: getCurrentPlayMode(ctx),
     },
-    lyrics: buildLyrics(snapshot.lyric.lines || []),
+    lyrics: buildLyrics(snapshot.lyric.lines || [], snapshot.lyric?.timeOffset),
   }
 }
 

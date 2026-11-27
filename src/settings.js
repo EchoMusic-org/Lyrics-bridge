@@ -1,6 +1,6 @@
 import { DEFAULT_SERVER_URL } from './constants.js'
 import { getConfig } from './config.js'
-import { toText } from './utils.js'
+import { logDebug, normalizeServerUrl } from './utils.js'
 import { connect, disconnect, isWsOpen, sendPluginCommand } from './websocket.js'
 
 export function defineSettings(ctx, state) {
@@ -14,18 +14,29 @@ export function defineSettings(ctx, state) {
       const saving = ref(false)
 
       const reload = async () => {
-        const config = await getConfig(ctx)
-        serverUrl.value = config.serverUrl
-        autoReconnect.value = config.autoReconnect
-        const savedAutoLaunch = await ctx.storage.get('autoLaunch')
-        autoLaunch.value = savedAutoLaunch !== false
+        try {
+          const config = await getConfig(ctx)
+          serverUrl.value = config.serverUrl
+          autoReconnect.value = config.autoReconnect
+          const savedAutoLaunch = await ctx.storage.get('autoLaunch')
+          autoLaunch.value = savedAutoLaunch !== false
+        } catch (error) {
+          logDebug('读取设置失败', error)
+        }
       }
 
       const saveAndReconnect = async () => {
         if (saving.value) return
+        // 保存前规范化并校验地址，非法地址会导致连接每 5 秒静默失败一次
+        const rawInput = serverUrl.value.trim()
+        const normalizedUrl = normalizeServerUrl(rawInput)
+        if (rawInput && !normalizedUrl) {
+          ctx.toast.warning('服务端地址无效，需为 ws:// 或 wss:// 开头的地址')
+          return
+        }
+        const nextServerUrl = normalizedUrl || DEFAULT_SERVER_URL
         saving.value = true
         try {
-          const nextServerUrl = toText(serverUrl.value) || DEFAULT_SERVER_URL
           serverUrl.value = nextServerUrl
           await ctx.storage.set('serverUrl', nextServerUrl)
           await ctx.storage.set('autoReconnect', Boolean(autoReconnect.value))
@@ -33,7 +44,8 @@ export function defineSettings(ctx, state) {
           disconnect(state)
           await connect(state, ctx)
           ctx.toast.success('EchoMusic-Lyrics-WinIsland 设置已保存')
-        } catch {
+        } catch (error) {
+          logDebug('设置保存失败', error)
           ctx.toast.warning('EchoMusic-Lyrics-WinIsland 设置保存失败')
         } finally {
           saving.value = false
@@ -53,7 +65,7 @@ export function defineSettings(ctx, state) {
       }
 
       onMounted(() => {
-        reload()
+        void reload()
       })
 
       const rowStyle = {

@@ -3,6 +3,13 @@ export function unwrapValue(value) {
   return value
 }
 
+// 轻量诊断日志：仅在渲染进程开发者工具可见，不干扰正常流程
+export const logDebug = (...args) => {
+  try {
+    console.debug('[Lyrics-bridge]', ...args)
+  } catch { }
+}
+
 export const toText = value => String(value ?? '').trim()
 
 export const splitArtists = value => toText(value)
@@ -59,6 +66,23 @@ export function stripDataUrlPrefix(value) {
   const text = toText(value)
   const match = text.match(/^data:[^,]+;base64,(.*)$/i)
   return match ? match[1].trim() : text
+}
+
+// 规范化服务端地址：补全 ws:// 前缀并校验协议；非法时返回空串
+export function normalizeServerUrl(value, fallback = '') {
+  const raw = toText(value)
+  if (!raw) return fallback
+
+  let candidate = raw
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(candidate)) candidate = `ws://${candidate}`
+
+  try {
+    const url = new URL(candidate)
+    if (url.protocol !== 'ws:' && url.protocol !== 'wss:') return ''
+    return url.toString()
+  } catch {
+    return ''
+  }
 }
 
 export function arrayBufferToBase64(buffer) {
